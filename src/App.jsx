@@ -1,7 +1,6 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   ClipboardList,
-  LayoutDashboard,
   Search,
   AlertTriangle,
   CheckCircle2,
@@ -22,6 +21,7 @@ import {
   Plus,
   Building2,
 } from "lucide-react";
+import { supabase } from "./supabaseClient";
 
 /* ----------------------------- Static config ----------------------------- */
 
@@ -66,13 +66,12 @@ const TECHNIQUES = [
   "MAC / Sedation",
   "Nerve block",
 ];
-const MONITORS = ["A-line", "CVP", "TEE"];
+const MONITORS = ["Standard", "A-line", "CVP", "TEE", "Flotrac", "อื่นๆ"];
 const WARDS = ["Recovery Room (RR)", "ICU", "SICU", "Ward", "Day case / กลับบ้าน"];
 const BLOOD_TYPES = ["PRC", "FFP", "Platelet", "Cryoprecipitate", "อื่นๆ"];
 const BLOOD_LOCATIONS = ["ตู้เย็น OR", "Blood bank"];
 
-const STORAGE_KEY = "cmu-anesthesia-cases-v2";
-const POLL_MS = 8000;
+const TABLE = "cases";
 const HANDOVER_PASSWORD = "9876";
 
 const emptyForm = {
@@ -89,7 +88,11 @@ const emptyForm = {
   operation: "",
   // Part 3
   techniques: [],
+  nerveBlockDetail: "",
   monitors: [],
+  monitorOther: "",
+  difficultAirway: "",
+  difficultAirwayDetail: "",
   signInTime: "",
   startTime: "",
   estimatedDurationMin: "",
@@ -97,6 +100,7 @@ const emptyForm = {
   labHb: "",
   labHct: "",
   bloodItems: [],
+  estimatedBloodLoss: "",
   otherLab: "",
   // Part 5
   postOpPain: "",
@@ -122,7 +126,7 @@ function addMinutesToTime(timeStr, minutes) {
   if (Number.isNaN(mins)) return null;
   const [h, m] = timeStr.split(":").map(Number);
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
-  const total = ((h * 60 + m + mins) % 1440 + 1440) % 1440;
+  const total = (((h * 60 + m + mins) % 1440) + 1440) % 1440;
   const hh = String(Math.floor(total / 60)).padStart(2, "0");
   const mm = String(total % 60).padStart(2, "0");
   return `${hh}:${mm}`;
@@ -221,11 +225,8 @@ function PasswordGate({ open, title, onCancel, onSuccess }) {
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-xs rounded-lg bg-white p-5 shadow-lg"
-      >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <form onSubmit={submit} className="w-full max-w-xs rounded-lg bg-white p-5 shadow-lg">
         <div className="mb-3 flex items-center gap-2 text-slate-700">
           <Lock size={16} className="text-teal-600" />
           <h3 className="text-sm font-semibold">{title}</h3>
@@ -262,7 +263,7 @@ function PasswordGate({ open, title, onCancel, onSuccess }) {
 
 /* --------------------------------- Header --------------------------------- */
 
-function Header({ activeTab, setActiveTab, syncState, lastSynced, onRefresh }) {
+function Header({ syncState, lastSynced, onRefresh, onAddCase }) {
   return (
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
@@ -278,54 +279,35 @@ function Header({ activeTab, setActiveTab, syncState, lastSynced, onRefresh }) {
           </div>
         </div>
 
-        <nav className="flex rounded-lg bg-slate-100 p-1 text-sm">
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => setActiveTab("form")}
-            className={
-              "flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-colors " +
-              (activeTab === "form"
-                ? "bg-white text-teal-700 shadow-sm"
-                : "text-slate-500 hover:text-slate-700")
-            }
+            onClick={onRefresh}
+            title="เชื่อมต่อฐานข้อมูลกลาง Supabase — ข้อมูลซิงค์ทุกอุปกรณ์แบบเรียลไทม์"
+            className="hidden items-center gap-1.5 text-[11px] text-slate-400 hover:text-teal-600 sm:flex"
           >
-            <ClipboardList size={15} />
-            <span className="hidden sm:inline">บันทึกข้อมูล</span>
+            {syncState === "error" ? (
+              <WifiOff size={14} className="text-rose-500" />
+            ) : (
+              <Wifi size={14} className={syncState === "loading" ? "animate-pulse" : ""} />
+            )}
+            <span>
+              {syncState === "loading"
+                ? "กำลังซิงค์..."
+                : syncState === "error"
+                ? "ซิงค์ไม่สำเร็จ"
+                : lastSynced
+                ? `อัปเดตล่าสุด ${timeAgo(lastSynced)}`
+                : "ยังไม่ซิงค์"}
+            </span>
+            <RefreshCw size={13} />
           </button>
           <button
-            onClick={() => setActiveTab("dashboard")}
-            className={
-              "flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-colors " +
-              (activeTab === "dashboard"
-                ? "bg-white text-teal-700 shadow-sm"
-                : "text-slate-500 hover:text-slate-700")
-            }
+            onClick={onAddCase}
+            className="flex items-center gap-1.5 rounded-md bg-teal-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-teal-700"
           >
-            <LayoutDashboard size={15} />
-            <span className="hidden sm:inline">Dashboard</span>
+            <Plus size={15} /> Add case
           </button>
-        </nav>
-
-        <button
-          onClick={onRefresh}
-          title="ข้อมูลถูกเก็บไว้ในเบราว์เซอร์นี้ (localStorage)"
-          className="flex items-center gap-1.5 text-[11px] text-slate-400 hover:text-teal-600"
-        >
-          {syncState === "error" ? (
-            <WifiOff size={14} className="text-rose-500" />
-          ) : (
-            <Wifi size={14} className={syncState === "loading" ? "animate-pulse" : ""} />
-          )}
-          <span className="hidden md:inline">
-            {syncState === "loading"
-              ? "กำลังซิงค์..."
-              : syncState === "error"
-              ? "ซิงค์ไม่สำเร็จ"
-              : lastSynced
-              ? `อัปเดตล่าสุด ${timeAgo(lastSynced)}`
-              : "ยังไม่ซิงค์"}
-          </span>
-          <RefreshCw size={13} />
-        </button>
+        </div>
       </div>
     </header>
   );
@@ -333,7 +315,7 @@ function Header({ activeTab, setActiveTab, syncState, lastSynced, onRefresh }) {
 
 /* --------------------------------- Form ------------------------------------ */
 
-function PatientForm({ casesByRoom, onSave, onHandover, onClearRoom }) {
+function PatientForm({ casesByRoom, onSave, onHandover, onClearRoom, onClose }) {
   const [room, setRoom] = useState("");
   const [form, setForm] = useState(emptyForm);
   const [savedFlash, setSavedFlash] = useState(false);
@@ -373,427 +355,481 @@ function PatientForm({ casesByRoom, onSave, onHandover, onClearRoom }) {
 
   const requestClear = () => setGate("clear");
 
-  // Blood item helpers
   const addBloodItem = () =>
     update({
       bloodItems: [...form.bloodItems, { type: "PRC", units: "", location: BLOOD_LOCATIONS[0] }],
     });
   const updateBloodItem = (idx, patch) =>
-    update({
-      bloodItems: form.bloodItems.map((b, i) => (i === idx ? { ...b, ...patch } : b)),
-    });
-  const removeBloodItem = (idx) =>
-    update({ bloodItems: form.bloodItems.filter((_, i) => i !== idx) });
+    update({ bloodItems: form.bloodItems.map((b, i) => (i === idx ? { ...b, ...patch } : b)) });
+  const removeBloodItem = (idx) => update({ bloodItems: form.bloodItems.filter((_, i) => i !== idx) });
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6">
-      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-800">บันทึกข้อมูลผู้ป่วยประจำห้องผ่าตัด</h2>
-          <p className="text-sm text-slate-400">เลือกห้องผ่าตัดเพื่อเริ่มกรอกหรือแก้ไขข้อมูล</p>
-        </div>
-        <div className="w-full sm:w-56">
-          <select
-            value={room}
-            onChange={(e) => setRoom(e.target.value)}
-            className={inputCls + " font-medium"}
-          >
-            <option value="">— เลือกห้องผ่าตัด —</option>
-            {ROOMS.map((r) => (
-              <option key={r} value={r}>
-                {r}
-                {casesByRoom[r]?.status === "handover" ? " (ส่งเวรแล้ว)" : casesByRoom[r] ? " (มีข้อมูล)" : ""}
-              </option>
-            ))}
-          </select>
-        </div>
+    <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-50">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+        <h2 className="flex items-center gap-2 text-base font-semibold text-slate-800">
+          <ClipboardList size={17} className="text-teal-600" /> Add case / ส่งเวร
+        </h2>
+        <button onClick={onClose} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100">
+          <X size={20} />
+        </button>
       </div>
 
-      {!room && (
-        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-6 py-14 text-center text-sm text-slate-400">
-          กรุณาเลือกห้องผ่าตัดด้านบนเพื่อเริ่มกรอกข้อมูล
+      <div className="mx-auto max-w-4xl px-4 py-6">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <p className="text-sm text-slate-400">เลือกห้องผ่าตัดเพื่อเริ่มกรอกหรือแก้ไขข้อมูล</p>
+          <div className="w-full sm:w-56">
+            <select
+              value={room}
+              onChange={(e) => setRoom(e.target.value)}
+              className={inputCls + " font-medium"}
+            >
+              <option value="">— เลือกห้องผ่าตัด —</option>
+              {ROOMS.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                  {casesByRoom[r]?.status === "handover" ? " (ส่งเวรแล้ว)" : casesByRoom[r] ? " (มีข้อมูล)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      )}
 
-      {room && (
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          {existing?.status === "handover" && (
-            <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-              <CheckCircle2 size={14} />
-              ห้องนี้ส่งเวรแล้วเมื่อ {timeAgo(existing.handoverAt)} — แก้ไขแล้วกดบันทึกได้ตามปกติ
-            </div>
-          )}
+        {!room && (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-14 text-center text-sm text-slate-400">
+            กรุณาเลือกห้องผ่าตัดด้านบนเพื่อเริ่มกรอกข้อมูล
+          </div>
+        )}
 
-          <SectionCard number={1} title="Patient Information" icon={User}>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Field label="อายุ (ปี)" required>
-                <input
-                  type="number"
-                  min="0"
-                  className={inputCls + " font-mono tabular-nums"}
-                  value={form.age}
-                  onChange={(e) => update({ age: e.target.value })}
-                  required
-                />
-              </Field>
-              <Field label="เพศ" required>
-                <select
-                  className={inputCls}
-                  value={form.sex}
-                  onChange={(e) => update({ sex: e.target.value })}
-                  required
-                >
-                  <option value="">เลือก</option>
-                  <option value="Male">Male</option>
-                  <option value="Female">Female</option>
-                  <option value="Other">Other</option>
-                </select>
-              </Field>
-              <Field label="Weight (kg)">
-                <input
-                  type="number"
-                  step="0.1"
-                  className={inputCls + " font-mono tabular-nums"}
-                  value={form.bw}
-                  onChange={(e) => update({ bw: e.target.value })}
-                />
-              </Field>
-              <Field label="Height (cm)">
-                <input
-                  type="number"
-                  step="0.1"
-                  className={inputCls + " font-mono tabular-nums"}
-                  value={form.ht}
-                  onChange={(e) => update({ ht: e.target.value })}
-                />
-              </Field>
-            </div>
-            {bmi && (
-              <p className="mt-3 text-xs text-slate-400">
-                BMI = <span className="font-mono font-semibold text-slate-600">{bmi}</span> kg/m²
-              </p>
-            )}
-          </SectionCard>
-
-          <SectionCard number={2} title="Clinical Information" icon={Activity}>
-            <div className="flex flex-col gap-3">
-              <Field label="ASA classification" required>
-                <div className="flex flex-wrap items-center gap-2">
-                  {ASA_OPTIONS.map((a) => (
-                    <Chip key={a} active={form.asa === a} onClick={() => update({ asa: a })}>
-                      {a}
-                    </Chip>
-                  ))}
-                  <span className="mx-1 h-5 w-px bg-slate-200" />
-                  <label className="flex items-center gap-1.5 text-sm text-rose-600">
-                    <input
-                      type="checkbox"
-                      checked={form.highRiskManual}
-                      onChange={(e) => update({ highRiskManual: e.target.checked })}
-                      className="h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-400"
-                    />
-                    ติ๊ก High risk เอง
-                  </label>
-                </div>
-                <p className="mt-1.5 text-[11px] text-slate-400">
-                  ASA class 4 ขึ้นไปจะถูกจัดเป็น High risk อัตโนมัติ (ไม่ต้องติ๊กก็ได้)
-                </p>
-              </Field>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Problem list">
-                  <textarea
-                    rows={2}
-                    className={inputCls}
-                    value={form.problemList}
-                    onChange={(e) => update({ problemList: e.target.value })}
-                  />
-                </Field>
-                <Field label="Diagnosis">
-                  <textarea
-                    rows={2}
-                    className={inputCls}
-                    value={form.diagnosis}
-                    onChange={(e) => update({ diagnosis: e.target.value })}
-                  />
-                </Field>
+        {room && (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            {existing?.status === "handover" && (
+              <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                <CheckCircle2 size={14} />
+                ห้องนี้ส่งเวรแล้วเมื่อ {timeAgo(existing.handoverAt)} — แก้ไขแล้วกดบันทึกได้ตามปกติ
               </div>
-              <Field label="Operation">
-                <input
-                  className={inputCls}
-                  value={form.operation}
-                  onChange={(e) => update({ operation: e.target.value })}
-                />
-              </Field>
-            </div>
-          </SectionCard>
+            )}
 
-          <SectionCard number={3} title="Anesthetic Technique" icon={Stethoscope}>
-            <div className="flex flex-col gap-4">
-              <Field label="Choice of anesthesia">
-                <div className="flex flex-wrap gap-2">
-                  {TECHNIQUES.map((t) => (
-                    <Chip
-                      key={t}
-                      active={form.techniques.includes(t)}
-                      onClick={() => update({ techniques: toggleInArray(form.techniques, t) })}
-                    >
-                      {t}
-                    </Chip>
-                  ))}
-                </div>
-              </Field>
-              <Field label="Monitoring">
-                <div className="flex flex-wrap gap-2">
-                  {MONITORS.map((m) => (
-                    <Chip
-                      key={m}
-                      active={form.monitors.includes(m)}
-                      onClick={() => update({ monitors: toggleInArray(form.monitors, m) })}
-                    >
-                      {m}
-                    </Chip>
-                  ))}
-                </div>
-              </Field>
+            <SectionCard number={1} title="Patient Information" icon={User}>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Field label="Sign-in time">
-                  <input
-                    type="time"
-                    className={inputCls + " font-mono tabular-nums"}
-                    value={form.signInTime}
-                    onChange={(e) => update({ signInTime: e.target.value })}
-                  />
-                </Field>
-                <Field label="Start time">
-                  <input
-                    type="time"
-                    className={inputCls + " font-mono tabular-nums"}
-                    value={form.startTime}
-                    onChange={(e) => update({ startTime: e.target.value })}
-                  />
-                </Field>
-                <Field label="ระยะเวลาผ่าตัด (นาที)" className="col-span-2 sm:col-span-1">
+                <Field label="อายุ (ปี)" required>
                   <input
                     type="number"
                     min="0"
-                    placeholder="เช่น 150"
                     className={inputCls + " font-mono tabular-nums"}
-                    value={form.estimatedDurationMin}
-                    onChange={(e) => update({ estimatedDurationMin: e.target.value })}
+                    value={form.age}
+                    onChange={(e) => update({ age: e.target.value })}
+                    required
                   />
                 </Field>
-                <Field label="เวลาคาดว่าจะเสร็จ">
-                  <div
-                    className={
-                      inputCls +
-                      " flex items-center font-mono tabular-nums font-semibold " +
-                      (estimatedFinish ? "text-teal-700 bg-teal-50" : "text-slate-300")
-                    }
-                  >
-                    {estimatedFinish || "รอกรอกเวลา"}
-                  </div>
-                </Field>
-              </div>
-            </div>
-          </SectionCard>
-
-          <SectionCard number={4} title="Laboratory & Blood Management" icon={Droplet}>
-            <div className="flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Field label="Hb (g/dL)">
-                  <input
-                    type="number"
-                    step="0.1"
-                    className={inputCls + " font-mono tabular-nums"}
-                    value={form.labHb}
-                    onChange={(e) => update({ labHb: e.target.value })}
-                  />
-                </Field>
-                <Field label="Hct (%)">
-                  <input
-                    type="number"
-                    step="0.1"
-                    className={inputCls + " font-mono tabular-nums"}
-                    value={form.labHct}
-                    onChange={(e) => update({ labHct: e.target.value })}
-                  />
-                </Field>
-              </div>
-
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <span className="text-xs font-medium text-slate-500">Blood component</span>
-                  <button
-                    type="button"
-                    onClick={addBloodItem}
-                    className="flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700"
-                  >
-                    <Plus size={13} /> เพิ่มรายการเลือด
-                  </button>
-                </div>
-                {form.bloodItems.length === 0 ? (
-                  <p className="rounded-md border border-dashed border-slate-200 px-3 py-2.5 text-xs text-slate-300">
-                    ยังไม่มีรายการเลือดที่เตรียมไว้
-                  </p>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {form.bloodItems.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2"
-                      >
-                        <select
-                          className={inputCls + " w-28"}
-                          value={item.type}
-                          onChange={(e) => updateBloodItem(idx, { type: e.target.value })}
-                        >
-                          {BLOOD_TYPES.map((t) => (
-                            <option key={t} value={t}>
-                              {t}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder="unit"
-                          className={inputCls + " w-20 font-mono tabular-nums"}
-                          value={item.units}
-                          onChange={(e) => updateBloodItem(idx, { units: e.target.value })}
-                        />
-                        <span className="text-xs text-slate-400">unit</span>
-                        <div className="flex gap-3 pl-1">
-                          {BLOOD_LOCATIONS.map((loc) => (
-                            <label key={loc} className="flex items-center gap-1 text-xs text-slate-600">
-                              <input
-                                type="radio"
-                                name={`blood-loc-${idx}`}
-                                checked={item.location === loc}
-                                onChange={() => updateBloodItem(idx, { location: loc })}
-                                className="h-3.5 w-3.5 text-teal-600 focus:ring-teal-400"
-                              />
-                              {loc}
-                            </label>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeBloodItem(idx)}
-                          className="ml-auto text-slate-300 hover:text-rose-500"
-                        >
-                          <X size={15} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <Field label="Other important lab">
-                <textarea
-                  rows={2}
-                  className={inputCls}
-                  value={form.otherLab}
-                  onChange={(e) => update({ otherLab: e.target.value })}
-                />
-              </Field>
-            </div>
-          </SectionCard>
-
-          <SectionCard number={5} title="Post-Operative Information" icon={Bed}>
-            <div className="flex flex-col gap-3">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Post-op pain control">
-                  <input
-                    className={inputCls}
-                    placeholder="เช่น IV PCA morphine, Local infiltration"
-                    value={form.postOpPain}
-                    onChange={(e) => update({ postOpPain: e.target.value })}
-                  />
-                </Field>
-                <Field label="Post-op ward" required>
+                <Field label="เพศ" required>
                   <select
                     className={inputCls}
-                    value={form.postOpWard}
-                    onChange={(e) => update({ postOpWard: e.target.value })}
+                    value={form.sex}
+                    onChange={(e) => update({ sex: e.target.value })}
                     required
                   >
                     <option value="">เลือก</option>
-                    {WARDS.map((w) => (
-                      <option key={w} value={w}>
-                        {w}
-                      </option>
-                    ))}
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
                   </select>
                 </Field>
+                <Field label="Weight (kg)">
+                  <input
+                    type="number"
+                    step="0.1"
+                    className={inputCls + " font-mono tabular-nums"}
+                    value={form.bw}
+                    onChange={(e) => update({ bw: e.target.value })}
+                  />
+                </Field>
+                <Field label="Height (cm)">
+                  <input
+                    type="number"
+                    step="0.1"
+                    className={inputCls + " font-mono tabular-nums"}
+                    value={form.ht}
+                    onChange={(e) => update({ ht: e.target.value })}
+                  />
+                </Field>
               </div>
-              <Field label="Other information (ข้อควรระวัง / หมายเหตุ)">
-                <textarea
-                  rows={2}
-                  className={inputCls}
-                  value={form.otherInfo}
-                  onChange={(e) => update({ otherInfo: e.target.value })}
-                />
-              </Field>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="ผู้บันทึกข้อมูล">
+              {bmi && (
+                <p className="mt-3 text-xs text-slate-400">
+                  BMI = <span className="font-mono font-semibold text-slate-600">{bmi}</span> kg/m²
+                </p>
+              )}
+            </SectionCard>
+
+            <SectionCard number={2} title="Clinical Information" icon={Activity}>
+              <div className="flex flex-col gap-3">
+                <Field label="ASA classification" required>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {ASA_OPTIONS.map((a) => (
+                      <Chip key={a} active={form.asa === a} onClick={() => update({ asa: a })}>
+                        {a}
+                      </Chip>
+                    ))}
+                    <span className="mx-1 h-5 w-px bg-slate-200" />
+                    <label className="flex items-center gap-1.5 text-sm text-rose-600">
+                      <input
+                        type="checkbox"
+                        checked={form.highRiskManual}
+                        onChange={(e) => update({ highRiskManual: e.target.checked })}
+                        className="h-4 w-4 rounded border-slate-300 text-rose-600 focus:ring-rose-400"
+                      />
+                      ติ๊ก High risk เอง
+                    </label>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-slate-400">
+                    ASA class 4 ขึ้นไปจะถูกจัดเป็น High risk อัตโนมัติ (ไม่ต้องติ๊กก็ได้)
+                  </p>
+                </Field>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Problem list">
+                    <textarea
+                      rows={2}
+                      className={inputCls}
+                      value={form.problemList}
+                      onChange={(e) => update({ problemList: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Diagnosis">
+                    <textarea
+                      rows={2}
+                      className={inputCls}
+                      value={form.diagnosis}
+                      onChange={(e) => update({ diagnosis: e.target.value })}
+                    />
+                  </Field>
+                </div>
+                <Field label="Operation">
                   <input
                     className={inputCls}
-                    value={form.recorderName}
-                    onChange={(e) => update({ recorderName: e.target.value })}
-                  />
-                </Field>
-                <Field label="เบอร์โทรผู้บันทึก">
-                  <input
-                    type="tel"
-                    className={inputCls + " font-mono"}
-                    value={form.recorderPhone}
-                    onChange={(e) => update({ recorderPhone: e.target.value })}
+                    value={form.operation}
+                    onChange={(e) => update({ operation: e.target.value })}
                   />
                 </Field>
               </div>
-            </div>
-          </SectionCard>
+            </SectionCard>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
-            <div className="text-xs text-slate-400">
-              {savedFlash ? (
-                <span className="flex items-center gap-1.5 font-medium text-teal-600">
-                  <CheckCircle2 size={14} /> บันทึกแล้ว
-                </span>
-              ) : existing ? (
-                `แก้ไขล่าสุด ${timeAgo(existing.updatedAt)}`
-              ) : (
-                "ยังไม่มีข้อมูลบันทึกไว้สำหรับห้องนี้"
-              )}
-            </div>
-            <div className="flex gap-2">
-              {existing && (
+            <SectionCard number={3} title="Anesthetic Technique" icon={Stethoscope}>
+              <div className="flex flex-col gap-4">
+                <Field label="Choice of anesthesia">
+                  <div className="flex flex-wrap gap-2">
+                    {TECHNIQUES.map((t) => (
+                      <Chip
+                        key={t}
+                        active={form.techniques.includes(t)}
+                        onClick={() => update({ techniques: toggleInArray(form.techniques, t) })}
+                      >
+                        {t}
+                      </Chip>
+                    ))}
+                  </div>
+                  {form.techniques.includes("Nerve block") && (
+                    <input
+                      className={inputCls + " mt-2"}
+                      placeholder="ระบุตำแหน่ง block เช่น Interscalene block, TAP block"
+                      value={form.nerveBlockDetail}
+                      onChange={(e) => update({ nerveBlockDetail: e.target.value })}
+                    />
+                  )}
+                </Field>
+
+                <Field label="Monitoring">
+                  <div className="flex flex-wrap gap-2">
+                    {MONITORS.map((m) => (
+                      <Chip
+                        key={m}
+                        active={form.monitors.includes(m)}
+                        onClick={() => update({ monitors: toggleInArray(form.monitors, m) })}
+                      >
+                        {m}
+                      </Chip>
+                    ))}
+                  </div>
+                  {form.monitors.includes("อื่นๆ") && (
+                    <input
+                      className={inputCls + " mt-2"}
+                      placeholder="ระบุ monitor อื่นๆ"
+                      value={form.monitorOther}
+                      onChange={(e) => update({ monitorOther: e.target.value })}
+                    />
+                  )}
+                </Field>
+
+                <Field label="Difficult airway">
+                  <div className="flex gap-2">
+                    <Chip active={form.difficultAirway === "No"} onClick={() => update({ difficultAirway: "No" })}>
+                      No
+                    </Chip>
+                    <Chip
+                      active={form.difficultAirway === "Yes"}
+                      onClick={() => update({ difficultAirway: "Yes" })}
+                    >
+                      Yes
+                    </Chip>
+                  </div>
+                  {form.difficultAirway === "Yes" && (
+                    <textarea
+                      rows={2}
+                      className={inputCls + " mt-2"}
+                      placeholder="อธิบายลักษณะ difficult airway และวิธีจัดการ"
+                      value={form.difficultAirwayDetail}
+                      onChange={(e) => update({ difficultAirwayDetail: e.target.value })}
+                    />
+                  )}
+                </Field>
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Field label="Sign-in time">
+                    <input
+                      type="time"
+                      className={inputCls + " font-mono tabular-nums"}
+                      value={form.signInTime}
+                      onChange={(e) => update({ signInTime: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Start time">
+                    <input
+                      type="time"
+                      className={inputCls + " font-mono tabular-nums"}
+                      value={form.startTime}
+                      onChange={(e) => update({ startTime: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="ระยะเวลาผ่าตัด (นาที)" className="col-span-2 sm:col-span-1">
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="เช่น 150"
+                      className={inputCls + " font-mono tabular-nums"}
+                      value={form.estimatedDurationMin}
+                      onChange={(e) => update({ estimatedDurationMin: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="เวลาคาดว่าจะเสร็จ">
+                    <div
+                      className={
+                        inputCls +
+                        " flex items-center font-mono tabular-nums font-semibold " +
+                        (estimatedFinish ? "text-teal-700 bg-teal-50" : "text-slate-300")
+                      }
+                    >
+                      {estimatedFinish || "รอกรอกเวลา"}
+                    </div>
+                  </Field>
+                </div>
+              </div>
+            </SectionCard>
+
+            <SectionCard number={4} title="Laboratory & Blood Management" icon={Droplet}>
+              <div className="flex flex-col gap-4">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Field label="Hb (g/dL)">
+                    <input
+                      type="number"
+                      step="0.1"
+                      className={inputCls + " font-mono tabular-nums"}
+                      value={form.labHb}
+                      onChange={(e) => update({ labHb: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Hct (%)">
+                    <input
+                      type="number"
+                      step="0.1"
+                      className={inputCls + " font-mono tabular-nums"}
+                      value={form.labHct}
+                      onChange={(e) => update({ labHct: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Estimated blood loss (mL)" className="col-span-2 sm:col-span-2">
+                    <input
+                      type="number"
+                      min="0"
+                      className={inputCls + " font-mono tabular-nums"}
+                      value={form.estimatedBloodLoss}
+                      onChange={(e) => update({ estimatedBloodLoss: e.target.value })}
+                    />
+                  </Field>
+                </div>
+
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-xs font-medium text-slate-500">Blood component</span>
+                    <button
+                      type="button"
+                      onClick={addBloodItem}
+                      className="flex items-center gap-1 text-xs font-medium text-teal-600 hover:text-teal-700"
+                    >
+                      <Plus size={13} /> เพิ่มรายการเลือด
+                    </button>
+                  </div>
+                  {form.bloodItems.length === 0 ? (
+                    <p className="rounded-md border border-dashed border-slate-200 px-3 py-2.5 text-xs text-slate-300">
+                      ยังไม่มีรายการเลือดที่เตรียมไว้
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {form.bloodItems.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2"
+                        >
+                          <select
+                            className={inputCls + " w-28"}
+                            value={item.type}
+                            onChange={(e) => updateBloodItem(idx, { type: e.target.value })}
+                          >
+                            {BLOOD_TYPES.map((t) => (
+                              <option key={t} value={t}>
+                                {t}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="unit"
+                            className={inputCls + " w-20 font-mono tabular-nums"}
+                            value={item.units}
+                            onChange={(e) => updateBloodItem(idx, { units: e.target.value })}
+                          />
+                          <span className="text-xs text-slate-400">unit</span>
+                          <div className="flex gap-3 pl-1">
+                            {BLOOD_LOCATIONS.map((loc) => (
+                              <label key={loc} className="flex items-center gap-1 text-xs text-slate-600">
+                                <input
+                                  type="radio"
+                                  name={`blood-loc-${idx}`}
+                                  checked={item.location === loc}
+                                  onChange={() => updateBloodItem(idx, { location: loc })}
+                                  className="h-3.5 w-3.5 text-teal-600 focus:ring-teal-400"
+                                />
+                                {loc}
+                              </label>
+                            ))}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeBloodItem(idx)}
+                            className="ml-auto text-slate-300 hover:text-rose-500"
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <Field label="Other important lab">
+                  <textarea
+                    rows={2}
+                    className={inputCls}
+                    value={form.otherLab}
+                    onChange={(e) => update({ otherLab: e.target.value })}
+                  />
+                </Field>
+              </div>
+            </SectionCard>
+
+            <SectionCard number={5} title="Post-Operative Information" icon={Bed}>
+              <div className="flex flex-col gap-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Post-op pain control">
+                    <input
+                      className={inputCls}
+                      placeholder="เช่น IV PCA morphine, Local infiltration"
+                      value={form.postOpPain}
+                      onChange={(e) => update({ postOpPain: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Post-op ward" required>
+                    <select
+                      className={inputCls}
+                      value={form.postOpWard}
+                      onChange={(e) => update({ postOpWard: e.target.value })}
+                      required
+                    >
+                      <option value="">เลือก</option>
+                      {WARDS.map((w) => (
+                        <option key={w} value={w}>
+                          {w}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <Field label="Other information (ข้อควรระวัง / หมายเหตุ)">
+                  <textarea
+                    rows={2}
+                    className={inputCls}
+                    value={form.otherInfo}
+                    onChange={(e) => update({ otherInfo: e.target.value })}
+                  />
+                </Field>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="ผู้บันทึกข้อมูล">
+                    <input
+                      className={inputCls}
+                      value={form.recorderName}
+                      onChange={(e) => update({ recorderName: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="เบอร์โทรผู้บันทึก">
+                    <input
+                      type="tel"
+                      className={inputCls + " font-mono"}
+                      value={form.recorderPhone}
+                      onChange={(e) => update({ recorderPhone: e.target.value })}
+                    />
+                  </Field>
+                </div>
+              </div>
+            </SectionCard>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3">
+              <div className="text-xs text-slate-400">
+                {savedFlash ? (
+                  <span className="flex items-center gap-1.5 font-medium text-teal-600">
+                    <CheckCircle2 size={14} /> บันทึกแล้ว
+                  </span>
+                ) : existing ? (
+                  `แก้ไขล่าสุด ${timeAgo(existing.updatedAt)}`
+                ) : (
+                  "ยังไม่มีข้อมูลบันทึกไว้สำหรับห้องนี้"
+                )}
+              </div>
+              <div className="flex gap-2">
+                {existing && (
+                  <button
+                    type="button"
+                    onClick={requestClear}
+                    className="flex items-center gap-1.5 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:border-rose-300 hover:text-rose-600"
+                  >
+                    <Trash2 size={14} /> เคลียร์ห้องนี้
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="flex items-center gap-1.5 rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  <Save size={14} /> บันทึกข้อมูล
+                </button>
                 <button
                   type="button"
-                  onClick={requestClear}
-                  className="flex items-center gap-1.5 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:border-rose-300 hover:text-rose-600"
+                  onClick={requestHandover}
+                  className="flex items-center gap-1.5 rounded-md bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700"
                 >
-                  <Trash2 size={14} /> เคลียร์ห้องนี้
+                  <Lock size={13} /> ส่งเวร
                 </button>
-              )}
-              <button
-                type="submit"
-                className="flex items-center gap-1.5 rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
-              >
-                <Save size={14} /> บันทึกข้อมูล
-              </button>
-              <button
-                type="button"
-                onClick={requestHandover}
-                className="flex items-center gap-1.5 rounded-md bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700"
-              >
-                <Lock size={13} /> ส่งเวร
-              </button>
+              </div>
             </div>
-          </div>
-        </form>
-      )}
+          </form>
+        )}
+      </div>
 
       <PasswordGate
         open={gate === "handover"}
@@ -892,11 +928,18 @@ function DetailModal({ room, entry, onClose, onRequestDelete }) {
     ["Problem list", entry.problemList || "-"],
     ["Diagnosis", entry.diagnosis || "-"],
     ["Operation", entry.operation || "-"],
-    ["Choice of anesthesia", entry.techniques?.join(", ") || "-"],
-    ["Monitoring", entry.monitors?.join(", ") || "-"],
+    [
+      "Choice of anesthesia",
+      entry.techniques?.length
+        ? entry.techniques.join(", ") + (entry.nerveBlockDetail ? ` (${entry.nerveBlockDetail})` : "")
+        : "-",
+    ],
+    ["Monitoring", entry.monitors?.length ? entry.monitors.join(", ") + (entry.monitorOther ? ` (${entry.monitorOther})` : "") : "-"],
+    ["Difficult airway", entry.difficultAirway ? `${entry.difficultAirway}${entry.difficultAirwayDetail ? " — " + entry.difficultAirwayDetail : ""}` : "-"],
     ["Sign-in / Start time", `${entry.signInTime || "-"} / ${entry.startTime || "-"}`],
     ["ระยะเวลาผ่าตัด (นาที) / คาดว่าเสร็จ", `${entry.estimatedDurationMin || "-"} / ${entry.estimatedFinish || "-"}`],
     ["Hb / Hct", `${entry.labHb || "-"} / ${entry.labHct || "-"}`],
+    ["Estimated blood loss", entry.estimatedBloodLoss ? `${entry.estimatedBloodLoss} mL` : "-"],
     [
       "Blood component",
       entry.bloodItems?.length
@@ -1044,7 +1087,7 @@ function Dashboard({ casesByRoom, onDeleteRoom }) {
 
       {!anyData ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-6 py-14 text-center text-sm text-slate-400">
-          ยังไม่มีห้องผ่าตัดใดบันทึกข้อมูล
+          ยังไม่มีห้องผ่าตัดใดบันทึกข้อมูล — กด "Add case" มุมขวาบนเพื่อเริ่มกรอก
         </div>
       ) : !anyVisible ? (
         <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-6 py-14 text-center text-sm text-slate-400">
@@ -1102,81 +1145,96 @@ function Dashboard({ casesByRoom, onDeleteRoom }) {
 /* ---------------------------------- App ------------------------------------ */
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("form");
   const [casesByRoom, setCasesByRoom] = useState({});
   const [syncState, setSyncState] = useState("loading");
   const [lastSynced, setLastSynced] = useState(null);
-  const pollRef = useRef(null);
+  const [formOpen, setFormOpen] = useState(false);
 
-  const loadFromStorage = useCallback(async () => {
+  const loadFromSupabase = useCallback(async () => {
     setSyncState("loading");
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      const data = raw ? JSON.parse(raw) : {};
-      setCasesByRoom(data);
+      const { data, error } = await supabase.from(TABLE).select("*");
+      if (error) throw error;
+      const next = {};
+      (data || []).forEach((row) => {
+        next[row.room] = {
+          ...row.payload,
+          status: row.status,
+          updatedAt: row.updated_at,
+          handoverAt: row.handover_at,
+        };
+      });
+      setCasesByRoom(next);
       setSyncState("idle");
       setLastSynced(new Date().toISOString());
     } catch (err) {
-      console.error("Storage load failed:", err);
-      setCasesByRoom({});
+      console.error("Supabase load failed:", err);
       setSyncState("error");
     }
   }, []);
 
-  const persist = useCallback(async (nextData) => {
-    setSyncState("loading");
+  const persistRoom = useCallback(async (room, entry) => {
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextData));
+      const { error } = await supabase.from(TABLE).upsert({
+        room,
+        payload: entry,
+        status: entry.status,
+        updated_at: entry.updatedAt,
+        handover_at: entry.handoverAt || null,
+      });
+      if (error) throw error;
       setSyncState("idle");
       setLastSynced(new Date().toISOString());
     } catch (err) {
-      console.error("Storage save failed:", err);
+      console.error("Supabase save failed:", err);
       setSyncState("error");
     }
   }, []);
 
+  const deleteRoomRemote = useCallback(async (room) => {
+    try {
+      const { error } = await supabase.from(TABLE).delete().eq("room", room);
+      if (error) throw error;
+      setSyncState("idle");
+    } catch (err) {
+      console.error("Supabase delete failed:", err);
+      setSyncState("error");
+    }
+  }, []);
+
+  // Initial load + realtime subscription so every device sees updates instantly.
   useEffect(() => {
-    loadFromStorage();
-    const onStorageEvent = (e) => {
-      if (e.key === STORAGE_KEY) loadFromStorage();
-    };
-    window.addEventListener("storage", onStorageEvent);
-    pollRef.current = setInterval(loadFromStorage, POLL_MS);
+    loadFromSupabase();
+    const channel = supabase
+      .channel("cases-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: TABLE }, () => {
+        loadFromSupabase();
+      })
+      .subscribe();
     return () => {
-      window.removeEventListener("storage", onStorageEvent);
-      clearInterval(pollRef.current);
+      supabase.removeChannel(channel);
     };
-  }, [loadFromStorage]);
+  }, [loadFromSupabase]);
 
   const handleSave = (room, data) => {
     setCasesByRoom((prev) => {
-      const next = {
-        ...prev,
-        [room]: {
-          ...prev[room],
-          ...data,
-          status: prev[room]?.status === "handover" ? "handover" : "filled",
-          updatedAt: new Date().toISOString(),
-        },
+      const entry = {
+        ...prev[room],
+        ...data,
+        status: prev[room]?.status === "handover" ? "handover" : "filled",
+        updatedAt: new Date().toISOString(),
       };
-      persist(next);
-      return next;
+      persistRoom(room, entry);
+      return { ...prev, [room]: entry };
     });
   };
 
   const handleHandover = (room) => {
     setCasesByRoom((prev) => {
       if (!prev[room]) return prev;
-      const next = {
-        ...prev,
-        [room]: {
-          ...prev[room],
-          status: "handover",
-          handoverAt: new Date().toISOString(),
-        },
-      };
-      persist(next);
-      return next;
+      const entry = { ...prev[room], status: "handover", handoverAt: new Date().toISOString() };
+      persistRoom(room, entry);
+      return { ...prev, [room]: entry };
     });
   };
 
@@ -1184,32 +1242,28 @@ export default function App() {
     setCasesByRoom((prev) => {
       const next = { ...prev };
       delete next[room];
-      persist(next);
       return next;
     });
+    deleteRoomRemote(room);
   };
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
       <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
         syncState={syncState}
         lastSynced={lastSynced}
-        onRefresh={loadFromStorage}
+        onRefresh={loadFromSupabase}
+        onAddCase={() => setFormOpen(true)}
       />
-      <div className="border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-center text-[11px] text-amber-700">
-        เดโมนี้เก็บข้อมูลในเบราว์เซอร์เครื่องนี้เท่านั้น (localStorage) — สำหรับใช้งานจริงหลายห้อง/หลายเครื่องพร้อมกัน ต้องต่อฐานข้อมูลกลาง
-      </div>
-      {activeTab === "form" ? (
+      <Dashboard casesByRoom={casesByRoom} onDeleteRoom={handleClearRoom} />
+      {formOpen && (
         <PatientForm
           casesByRoom={casesByRoom}
           onSave={handleSave}
           onHandover={handleHandover}
           onClearRoom={handleClearRoom}
+          onClose={() => setFormOpen(false)}
         />
-      ) : (
-        <Dashboard casesByRoom={casesByRoom} onDeleteRoom={handleClearRoom} />
       )}
     </div>
   );
