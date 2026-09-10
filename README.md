@@ -70,3 +70,4 @@ anesthesia-handover/
     ├── index.css
     └── App.jsx   ← โค้ดหลักทั้งหมดของแอป (ฟอร์ม + dashboard)
 ```
+Redeploy trigger
